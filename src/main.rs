@@ -4,7 +4,7 @@ use crossterm::{
   ExecutableCommand,
 };
 use ratatui::{
-  Frame, layout::{Constraint, Direction, Flex, Layout, Rect, Spacing}, prelude::{CrosstermBackend, Stylize, Terminal}, symbols::merge::MergeStrategy, text::Line, widgets::{Block, BorderType, Borders, Paragraph},
+  Frame, layout::{Constraint, Direction, Flex, Layout, Rect, Spacing}, prelude::{CrosstermBackend, Stylize, Terminal}, style::{Color, Style}, symbols::merge::MergeStrategy, text::Line, widgets::{Block, BorderType, Borders, Paragraph},
 };
 use std::{
   io::{stdout, Result},
@@ -20,20 +20,39 @@ struct Settings {
   rows: usize,
   columns: usize,
   number_of_generations: Option<usize>,
-  locked: bool
+  locked: bool,
+  selected_pattern_index: usize,
+  focused_field: Field,
+  rows_buffer: String,
+  columns_buffer: String,
+  generations_buffer: String
 }
 
 impl Default for Settings {
   fn default() -> Self {
-    Settings { 
+    Settings {
       rows: 5,
       columns: 5,
       number_of_generations: None,
-      locked: false
+      locked: false,
+      selected_pattern_index: 0,
+      focused_field: Field::Rows,
+      rows_buffer: "5".to_string(),
+      columns_buffer: "5".to_string(),
+      generations_buffer: String::new()
     }
   }
 }
 
+impl Settings {
+  fn first_invalid_field(&self) -> Option<Field> {
+    if self.rows_buffer.is_empty() { return Some(Field::Rows); }
+    if self.columns_buffer.is_empty() { return Some(Field::Columns); }
+    None
+  }
+}
+
+#[derive(Clone, Copy)]
 enum Pattern {
   Blinker,
   Glider,
@@ -41,6 +60,14 @@ enum Pattern {
   Beacon,
   Pulsar,
   LightweightSpaceship
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Field {
+  Rows,
+  Columns,
+  Generations,
+  Pattern,
 }
 
 impl Pattern {
@@ -96,6 +123,29 @@ impl Pattern {
   }
 }
 
+impl Field {
+  const ALL: [Field; 4] = [Field::Rows, Field::Columns, Field::Generations, Field::Pattern];
+
+  fn next(self) -> Field {
+    let i = Field::ALL.iter().position(|f| *f == self).unwrap();
+    Field::ALL[(i + 1) % Field::ALL.len()]
+  }
+
+  fn prev(self) -> Field {
+    let i = Field::ALL.iter().position(|f| *f == self).unwrap();
+    Field::ALL[(i + Field::ALL.len() - 1) % Field::ALL.len()]
+  }
+
+  fn label(&self) -> &'static str {
+    match self {
+      Field::Rows => "Rows",
+      Field::Columns => "Columns",
+      Field::Generations => "Generations",
+      Field::Pattern => "Pattern",
+    }
+  }
+}
+
 fn main() -> Result<()> {
   const CHAR_ASPECT_RATIO: u16 = 2;
   const SIMULATION_TICK: time::Duration = time::Duration::from_millis(1000);
@@ -106,6 +156,7 @@ fn main() -> Result<()> {
   let mut game_of_life_grid = vec![vec![Cell { alive: false }; max_columns]; max_rows];
   let mut paused = false;
   let mut last_tick = time::Instant::now();
+  let mut settings = Settings::default();
 
   // Init grid with a blinker
   game_of_life_grid[1][2].alive = true;
@@ -142,7 +193,15 @@ fn main() -> Result<()> {
       frame.render_widget(game_block, left);
       frame.render_widget(options_block, right);
 
-      render_pause_button(frame, options_area, paused);
+      let field_areas = Layout::vertical([Constraint::Length(3); Field::ALL.len() + 1])
+        .flex(Flex::Start)
+        .split(options_area);
+
+      for (i, field) in Field::ALL.iter().enumerate() {
+        render_settings_field(frame, field_areas[i], *field, &settings);
+      } 
+
+      render_pause_button(frame, *field_areas.last().unwrap(), paused);
 
       let vertical_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -178,6 +237,27 @@ fn main() -> Result<()> {
             KeyCode::Char('q') => break,
             KeyCode::Char(' ') => paused = !paused,
             _ => {}
+          }
+
+          if !settings.locked {
+            match key.code {
+              KeyCode::Up => settings.focused_field = settings.focused_field.prev(),
+              KeyCode::Down => settings.focused_field = settings.focused_field.next(),
+              KeyCode::Left | KeyCode::Right => {
+                let delta: i64 = if key.code == KeyCode::Left { -1 } else { 1 };
+                match settings.focused_field {
+                  Field::Pattern => {
+                    let len = Pattern::ALL.len() as i64;
+                    let idx = settings.selected_pattern_index as i64;
+                    settings.selected_pattern_index = (idx + delta).rem_euclid(len) as usize;
+                  }
+                  Field::Rows => adjust_numeric_buffer(&mut settings.rows_buffer, delta),
+                  Field::Columns => adjust_numeric_buffer(&mut settings.columns_buffer, delta),
+                  Field::Generations => adjust_numeric_buffer(&mut settings.generations_buffer, delta),
+                }
+              }
+              _ => {}
+            }
           }
         }
       }
@@ -262,13 +342,39 @@ fn render_pause_button(frame: &mut Frame, area: Rect, paused: bool) {
             Line::from("(Space)")
             .right_aligned()
           )
-          .border_type(BorderType::Plain)
+          .border_type(BorderType::Double)
       )
       .on_black()
       .white()
       .bold()
       .centered(),
     button_area);
+}
+
+fn render_settings_field(frame: &mut Frame, area: Rect, field: Field, settings: &Settings) {
+  let label = field_display_text(field, settings);
+  let is_focused = !settings.locked && field == settings.focused_field;
+
+  let mut border_style = if is_focused {
+    Style::default().fg(Color::LightGreen)
+  } else {
+    Style::default()
+  };
+
+  let mut paragraph = Paragraph::new(label)
+    .on_black()
+    .white()
+    .bold()
+    .centered();
+
+  if settings.locked {
+    border_style = border_style.dim();
+    paragraph = paragraph.dim();
+  }
+
+  frame.render_widget(
+    paragraph.block(Block::bordered().border_style(border_style)),
+    area);
 }
 
 fn stamp_pattern(grid: &mut Vec<Vec<Cell>>, pattern: Pattern, origin: (usize, usize)) {
@@ -278,6 +384,30 @@ fn stamp_pattern(grid: &mut Vec<Vec<Cell>>, pattern: Pattern, origin: (usize, us
 
     if row >= 0 && col >= 0 && (row as usize) < grid.len() && (col as usize) < grid[0].len() {
       grid[row as usize][col as usize].alive = true;
+    }
+  }
+}
+
+fn adjust_numeric_buffer(buffer: &mut String, delta: i64) {
+  let current: i64 = buffer.parse().unwrap_or(0);
+  let updated = (current + delta).max(0);
+  *buffer = updated.to_string();
+}
+
+fn field_display_text(field: Field, settings: &Settings) -> String {
+  match field {
+    Field::Rows => format!("Rows: < {} >", settings.rows_buffer),
+    Field::Columns => format!("Columns: < {} >", settings.columns_buffer),
+    Field::Generations => {
+      if settings.generations_buffer.is_empty() {
+        "Generations: < \u{221E} >".to_string()  // ∞
+      } else {
+        format!("Generations: < {} >", settings.generations_buffer)
+      }
+    }
+    Field::Pattern => {
+      let pattern = Pattern::ALL[settings.selected_pattern_index];
+      format!("< {} >", pattern.label())
     }
   }
 }
