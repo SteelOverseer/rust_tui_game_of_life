@@ -4,7 +4,7 @@ use crossterm::{
   ExecutableCommand,
 };
 use ratatui::{
-  layout::{Constraint, Direction, Flex, Layout, Spacing}, prelude::{CrosstermBackend, Stylize, Terminal}, symbols::merge::MergeStrategy, text::Line, widgets::{Block, BorderType, Borders, Paragraph},
+  Frame, layout::{Constraint, Direction, Flex, Layout, Rect, Spacing}, prelude::{CrosstermBackend, Stylize, Terminal}, symbols::merge::MergeStrategy, text::Line, widgets::{Block, BorderType, Borders, Paragraph},
 };
 use std::{
   io::{stdout, Result},
@@ -14,6 +14,86 @@ use std::{
 #[derive(Debug, Clone, Copy)]
 struct Cell {
   alive: bool,
+}
+
+struct Settings {
+  rows: usize,
+  columns: usize,
+  number_of_generations: Option<usize>,
+  locked: bool
+}
+
+impl Default for Settings {
+  fn default() -> Self {
+    Settings { 
+      rows: 5,
+      columns: 5,
+      number_of_generations: None,
+      locked: false
+    }
+  }
+}
+
+enum Pattern {
+  Blinker,
+  Glider,
+  Toad,
+  Beacon,
+  Pulsar,
+  LightweightSpaceship
+}
+
+impl Pattern {
+  const ALL: [Pattern; 6] = [
+    Pattern::Blinker, Pattern::Glider, Pattern::Toad,
+    Pattern::Beacon, Pattern::Pulsar, Pattern::LightweightSpaceship,
+  ];
+
+  fn cells(&self) -> &'static [(isize, isize)] {
+    match self {
+      Pattern::Blinker => &[(0, 0), (0, 1), (0, 2)],
+      Pattern::Glider => &[(0, 1), (1, 2), (2, 0), (2, 1), (2, 2)],
+      Pattern::Toad => &[
+        (0, 1), (0, 2), (0, 3),
+        (1, 0), (1, 1), (1, 2)
+      ],
+      Pattern::Beacon => &[
+        (0, 0), (0, 1),
+        (1, 0), (1, 1),
+        (2, 2), (2, 3),
+        (3, 2), (3, 3)
+      ],
+      Pattern::Pulsar => &[
+        (0, 2), (0, 3), (0, 4), (0, 8), (0, 9), (0, 10),
+        (5, 2), (5, 3), (5, 4), (5, 8), (5, 9), (5, 10),
+        (7, 2), (7, 3), (7, 4), (7, 8), (7, 9), (7, 10),
+        (12, 2), (12, 3), (12, 4), (12, 8), (12, 9), (12, 10),
+        (2, 0), (2, 5), (2, 7), (2, 12),
+        (3, 0), (3, 5), (3, 7), (3, 12),
+        (4, 0), (4, 5), (4, 7), (4, 12),
+        (8, 0), (8, 5), (8, 7), (8, 12),
+        (9, 0), (9, 5), (9, 7), (9, 12),
+        (10, 0), (10, 5), (10, 7), (10, 12)
+      ],
+      Pattern::LightweightSpaceship => &[
+        (0, 1), (0, 2), (0, 3), (0, 4),
+        (1, 0), (1, 4),
+        (2, 4),
+        (3, 0), (3, 3)
+      ]
+    }
+  }
+
+  fn label(&self) -> &'static str {
+    match self {
+      Pattern::Blinker => "Blinker",
+      Pattern::Glider => "Glider",
+      Pattern::Toad => "Toad",
+      Pattern::Beacon => "Beacon",
+      Pattern::Pulsar => "Pulsar",
+      Pattern::LightweightSpaceship => "Lightweight Spaceship"
+    }
+  }
 }
 
 fn main() -> Result<()> {
@@ -39,50 +119,30 @@ fn main() -> Result<()> {
 
   loop {
     terminal.draw(|frame| {
-      let [top, bottom] = Layout::vertical([Constraint::Percentage(75), Constraint::Fill(1)])
+      let [left, right] = Layout::horizontal([Constraint::Percentage(75), Constraint::Fill(1)])
         .spacing(Spacing::Overlap(1))
         .areas(frame.area());
 
-      let game_block = Block::bordered().title("Game of Life").merge_borders(MergeStrategy::Exact);
-      let game_area = game_block.inner(top);
-      let options_block = Block::bordered().title("Options").merge_borders(MergeStrategy::Exact);
-      let options_area = options_block.inner(bottom);
+      let game_block = Block::bordered()
+        .title("Game of Life")
+        .merge_borders(MergeStrategy::Exact)
+        .border_type(BorderType::Double);
+      let game_area = game_block.inner(left);
+      let options_block = Block::bordered()
+        .title("Options")
+        .merge_borders(MergeStrategy::Exact)
+        .border_type(BorderType::Double);
+      let options_area = options_block.inner(right);
 
       let max_cell_height_by_height = game_area.height / max_rows as u16;
       let max_cell_height_by_width = (game_area.width / max_columns as u16) / CHAR_ASPECT_RATIO;
       let cell_height = max_cell_height_by_height.min(max_cell_height_by_width).max(1);
       let cell_width = cell_height * CHAR_ASPECT_RATIO;
 
-      frame.render_widget(game_block, top);
-      frame.render_widget(options_block, bottom);
+      frame.render_widget(game_block, left);
+      frame.render_widget(options_block, right);
 
-      // Pause Button
-      let button_label = if paused { " [Resume] " } else { " [Pause] " };
-
-      let [button_area] = Layout::horizontal([Constraint::Length(button_label.len() as u16 + 2)])
-        .flex(Flex::Center)
-        .areas(options_area);
-
-      let [button_area] = Layout::vertical([Constraint::Length(3)])
-        .flex(Flex::Center)
-        .areas(button_area);
-
-      frame.render_widget(
-        Paragraph::new(button_label)
-          .block(
-            Block::bordered()
-              .title_bottom(
-                Line::from("(Space)")
-                .right_aligned()
-              )
-              .border_type(BorderType::Double)
-          )
-          .on_black()
-          .white()
-          .bold()
-          .centered(),
-        button_area);
-      // End Pause Button
+      render_pause_button(frame, options_area, paused);
 
       let vertical_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -181,4 +241,43 @@ fn create_next_generation(curr_gen: &Vec<Vec<Cell>>) -> Vec<Vec<Cell>> {
   }
 
   return future_gen;
+}
+
+fn render_pause_button(frame: &mut Frame, area: Rect, paused: bool) {
+  let button_label = if paused { " [Resume] " } else { " [Pause] " };
+
+  let [button_area] = Layout::horizontal([Constraint::Length(button_label.len() as u16 + 2)])
+    .flex(Flex::Center)
+    .areas(area);
+
+  let [button_area] = Layout::vertical([Constraint::Length(3)])
+    .flex(Flex::Center)
+    .areas(button_area);
+
+  frame.render_widget(
+    Paragraph::new(button_label)
+      .block(
+        Block::bordered()
+          .title_bottom(
+            Line::from("(Space)")
+            .right_aligned()
+          )
+          .border_type(BorderType::Plain)
+      )
+      .on_black()
+      .white()
+      .bold()
+      .centered(),
+    button_area);
+}
+
+fn stamp_pattern(grid: &mut Vec<Vec<Cell>>, pattern: Pattern, origin: (usize, usize)) {
+  for (row_offset, col_offset) in pattern.cells() {
+    let row = origin.0 as isize + row_offset;
+    let col = origin.1 as isize + col_offset;
+
+    if row >= 0 && col >= 0 && (row as usize) < grid.len() && (col as usize) < grid[0].len() {
+      grid[row as usize][col as usize].alive = true;
+    }
+  }
 }
