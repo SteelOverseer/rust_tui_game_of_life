@@ -4,11 +4,10 @@ use crossterm::{
   ExecutableCommand,
 };
 use ratatui::{
-  Frame, layout::{Constraint, Direction, Flex, Layout, Rect, Spacing}, prelude::{CrosstermBackend, Stylize, Terminal}, style::{Color, Style}, symbols::merge::MergeStrategy, text::Line, widgets::{Block, BorderType, Borders, Paragraph},
+  Frame, layout::{Constraint, Direction, Flex, Layout, Rect, Spacing}, prelude::{CrosstermBackend, Stylize, Terminal}, style::{Color, Style}, symbols::merge::MergeStrategy, widgets::{Block, BorderType, Borders, Paragraph},
 };
 use std::{
-  io::{stdout, Result},
-  time,
+  io::{Result, stdout}, time::{self, Instant},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -45,10 +44,16 @@ impl Default for Settings {
 }
 
 impl Settings {
+  fn is_valid(&self, field: Field) -> bool {
+    match field {
+      Field::Rows => is_positive(&self.rows_buffer),
+      Field::Columns => is_positive(&self.columns_buffer),
+      Field::Generations | Field::Pattern => true,
+    }
+  }
+
   fn first_invalid_field(&self) -> Option<Field> {
-    if self.rows_buffer.is_empty() { return Some(Field::Rows); }
-    if self.columns_buffer.is_empty() { return Some(Field::Columns); }
-    None
+    Field::ALL.iter().copied().find(|field| !self.is_valid(*field))
   }
 }
 
@@ -135,15 +140,6 @@ impl Field {
     let i = Field::ALL.iter().position(|f| *f == self).unwrap();
     Field::ALL[(i + Field::ALL.len() - 1) % Field::ALL.len()]
   }
-
-  fn label(&self) -> &'static str {
-    match self {
-      Field::Rows => "Rows",
-      Field::Columns => "Columns",
-      Field::Generations => "Generations",
-      Field::Pattern => "Pattern",
-    }
-  }
 }
 
 fn main() -> Result<()> {
@@ -151,17 +147,11 @@ fn main() -> Result<()> {
   const SIMULATION_TICK: time::Duration = time::Duration::from_millis(1000);
   const INPUT_POLL_INTERVAL: time::Duration = time::Duration::from_millis(16);
 
-  let max_rows = 5;
-  let max_columns = 5;
-  let mut game_of_life_grid = vec![vec![Cell { alive: false }; max_columns]; max_rows];
   let mut paused = false;
   let mut last_tick = time::Instant::now();
   let mut settings = Settings::default();
-
-  // Init grid with a blinker
-  game_of_life_grid[1][2].alive = true;
-  game_of_life_grid[2][2].alive = true;
-  game_of_life_grid[3][2].alive = true;
+  let mut game_of_life_grid = vec![vec![Cell { alive: false }; settings.columns]; settings.rows];
+  let mut current_generation: u128 = 0;
 
   stdout().execute(EnterAlternateScreen)?;
   enable_raw_mode()?;
@@ -175,18 +165,18 @@ fn main() -> Result<()> {
         .areas(frame.area());
 
       let game_block = Block::bordered()
-        .title("Game of Life")
+        .title(format!(" Game of Life — Gen {current_generation} "))
         .merge_borders(MergeStrategy::Exact)
         .border_type(BorderType::Double);
       let game_area = game_block.inner(left);
       let options_block = Block::bordered()
-        .title("Options")
+        .title(" Options ")
         .merge_borders(MergeStrategy::Exact)
         .border_type(BorderType::Double);
       let options_area = options_block.inner(right);
 
-      let max_cell_height_by_height = game_area.height / max_rows as u16;
-      let max_cell_height_by_width = (game_area.width / max_columns as u16) / CHAR_ASPECT_RATIO;
+      let max_cell_height_by_height = game_area.height / settings.rows as u16;
+      let max_cell_height_by_width = (game_area.width / settings.columns as u16) / CHAR_ASPECT_RATIO;
       let cell_height = max_cell_height_by_height.min(max_cell_height_by_width).max(1);
       let cell_width = cell_height * CHAR_ASPECT_RATIO;
 
@@ -201,18 +191,18 @@ fn main() -> Result<()> {
         render_settings_field(frame, field_areas[i], *field, &settings);
       } 
 
-      render_pause_button(frame, *field_areas.last().unwrap(), paused);
+      render_legend(frame, *field_areas.last().unwrap(), paused, &settings);
 
       let vertical_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(cell_height); max_rows])
+        .constraints(vec![Constraint::Length(cell_height); settings.rows])
         .flex(Flex::Center)
         .split(game_area);
 
       for row in 0..vertical_layout.len() {
         let horizontal_layout = Layout::default()
           .direction(Direction::Horizontal)
-          .constraints(vec![Constraint::Length(cell_width); max_columns])
+          .constraints(vec![Constraint::Length(cell_width); settings.columns])
           .flex(Flex::Center)
           .split(vertical_layout[row]);
 
@@ -236,6 +226,30 @@ fn main() -> Result<()> {
           match key.code {
             KeyCode::Char('q') => break,
             KeyCode::Char(' ') => paused = !paused,
+            KeyCode::Enter => {
+              if !settings.locked {
+                if settings.first_invalid_field().is_none() {                  
+                  settings.rows = settings.rows_buffer.parse().unwrap();
+                  settings.columns = settings.columns_buffer.parse().unwrap();
+                  settings.number_of_generations = settings.generations_buffer.parse().ok();
+
+                  current_generation = 0;
+                  game_of_life_grid = vec![vec![Cell { alive: false }; settings.columns]; settings.rows];
+
+                  stamp_pattern(&mut game_of_life_grid, &settings);
+
+                  settings.locked = true;
+                }
+              } 
+              else {
+                game_of_life_grid = vec![vec![Cell { alive: false }; settings.columns]; settings.rows];
+
+                stamp_pattern(&mut game_of_life_grid, &settings);
+                paused = false;
+                last_tick = Instant::now();
+                settings.locked = false;
+              }
+            }
             _ => {}
           }
 
@@ -251,9 +265,9 @@ fn main() -> Result<()> {
                     let idx = settings.selected_pattern_index as i64;
                     settings.selected_pattern_index = (idx + delta).rem_euclid(len) as usize;
                   }
-                  Field::Rows => adjust_numeric_buffer(&mut settings.rows_buffer, delta),
-                  Field::Columns => adjust_numeric_buffer(&mut settings.columns_buffer, delta),
-                  Field::Generations => adjust_numeric_buffer(&mut settings.generations_buffer, delta),
+                  Field::Rows => adjust_numeric_buffer(&mut settings.rows_buffer, delta, 1),
+                  Field::Columns => adjust_numeric_buffer(&mut settings.columns_buffer, delta, 1),
+                  Field::Generations => adjust_numeric_buffer(&mut settings.generations_buffer, delta, 0),
                 }
               }
               _ => {}
@@ -263,8 +277,9 @@ fn main() -> Result<()> {
       }
     }
 
-    if !paused && last_tick.elapsed() >= SIMULATION_TICK {
+    if settings.locked && !paused && last_tick.elapsed() >= SIMULATION_TICK && settings.number_of_generations.is_none_or(|n| current_generation < n as u128) {
       game_of_life_grid = create_next_generation(&game_of_life_grid);
+      current_generation += 1;
       last_tick = time::Instant::now();
     }
   }
@@ -291,7 +306,7 @@ fn create_next_generation(curr_gen: &Vec<Vec<Cell>>) -> Vec<Vec<Cell>> {
           let neighbor_row = row as i8 + row_offset;
           let neighbor_col = col as i8 + col_offset;
 
-          if neighbor_row > 0 && neighbor_col > 0 && neighbor_row < rows as i8 && neighbor_col < cols as i8 {
+          if neighbor_row >= 0 && neighbor_col >= 0 && neighbor_row < rows as i8 && neighbor_col < cols as i8 {
             let neighbor = curr_gen[neighbor_row as usize][neighbor_col as usize];
             if neighbor.alive {
               live_neighbors += 1;
@@ -323,39 +338,33 @@ fn create_next_generation(curr_gen: &Vec<Vec<Cell>>) -> Vec<Vec<Cell>> {
   return future_gen;
 }
 
-fn render_pause_button(frame: &mut Frame, area: Rect, paused: bool) {
-  let button_label = if paused { " [Resume] " } else { " [Pause] " };
+fn render_legend(frame: &mut Frame, area: Rect, paused: bool, settings: &Settings) {
+  let pause_button_label = if paused { "Resume [Space]" } else { "Pause [Space]" };
+  let stop_button_label: &str = if settings.locked { "Stop [Enter]" } else { "Start [Enter]" };
+  let quit_label: &str = "Quit [q]";
 
-  let [button_area] = Layout::horizontal([Constraint::Length(button_label.len() as u16 + 2)])
-    .flex(Flex::Center)
-    .areas(area);
+  let legend_lines = Layout::vertical([Constraint::Length(1); 3])
+    .flex(Flex::Start)
+    .split(area);
 
-  let [button_area] = Layout::vertical([Constraint::Length(3)])
-    .flex(Flex::Center)
-    .areas(button_area);
-
-  frame.render_widget(
-    Paragraph::new(button_label)
-      .block(
-        Block::bordered()
-          .title_bottom(
-            Line::from("(Space)")
-            .right_aligned()
-          )
-          .border_type(BorderType::Double)
-      )
-      .on_black()
-      .white()
-      .bold()
-      .centered(),
-    button_area);
+  for (label, line_area) in [pause_button_label, stop_button_label, quit_label].into_iter().zip(legend_lines.iter()) {
+    frame.render_widget(
+      Paragraph::new(label)
+        .on_black()
+        .white()
+        .bold()
+        .centered(),
+      *line_area);
+  }
 }
 
 fn render_settings_field(frame: &mut Frame, area: Rect, field: Field, settings: &Settings) {
   let label = field_display_text(field, settings);
   let is_focused = !settings.locked && field == settings.focused_field;
 
-  let mut border_style = if is_focused {
+  let mut border_style = if !settings.is_valid(field) {
+    Style::default().fg(Color::Red)
+  } else if is_focused {
     Style::default().fg(Color::LightGreen)
   } else {
     Style::default()
@@ -377,7 +386,17 @@ fn render_settings_field(frame: &mut Frame, area: Rect, field: Field, settings: 
     area);
 }
 
-fn stamp_pattern(grid: &mut Vec<Vec<Cell>>, pattern: Pattern, origin: (usize, usize)) {
+fn stamp_pattern(grid: &mut Vec<Vec<Cell>>, settings: &Settings) {
+  let pattern = Pattern::ALL[settings.selected_pattern_index];
+  let cells = pattern.cells();
+  let height = cells.iter().map(|(r, _)| r + 1).max().unwrap_or(0) as usize;
+  let width = cells.iter().map(|(_, c)| c + 1).max().unwrap_or(0) as usize;
+
+  let origin = (
+    settings.rows.saturating_sub(height) / 2,
+    settings.columns.saturating_sub(width) / 2,
+  );
+
   for (row_offset, col_offset) in pattern.cells() {
     let row = origin.0 as isize + row_offset;
     let col = origin.1 as isize + col_offset;
@@ -388,10 +407,14 @@ fn stamp_pattern(grid: &mut Vec<Vec<Cell>>, pattern: Pattern, origin: (usize, us
   }
 }
 
-fn adjust_numeric_buffer(buffer: &mut String, delta: i64) {
+fn adjust_numeric_buffer(buffer: &mut String, delta: i64, min: i64) {
   let current: i64 = buffer.parse().unwrap_or(0);
-  let updated = (current + delta).max(0);
+  let updated = (current + delta).max(min);
   *buffer = updated.to_string();
+}
+
+fn is_positive(buffer: &str) -> bool {
+  buffer.parse::<usize>().is_ok_and(|n| n > 0)
 }
 
 fn field_display_text(field: Field, settings: &Settings) -> String {
