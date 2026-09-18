@@ -11,7 +11,7 @@ pub fn render_legend(frame: &mut Frame, area: Rect, paused: bool, settings: &Set
     .flex(Flex::Start)
     .split(area);
 
-  for (label, line_area) in [pause_button_label, stop_button_label, quit_label].into_iter().zip(legend_lines.iter()) {
+  for (label, line_area) in [stop_button_label, pause_button_label, quit_label].into_iter().zip(legend_lines.iter()) {
     frame.render_widget(
       Paragraph::new(label)
         .on_black()
