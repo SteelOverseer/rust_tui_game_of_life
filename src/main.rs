@@ -124,6 +124,7 @@ fn main() -> Result<()> {
                 game_of_life_grid = vec![vec![Cell { alive: false }; settings.columns]; settings.rows];
 
                 stamp_pattern(&mut game_of_life_grid, &settings);
+                current_generation = 0;
                 paused = false;
                 last_tick = Instant::now();
                 settings.locked = false;
