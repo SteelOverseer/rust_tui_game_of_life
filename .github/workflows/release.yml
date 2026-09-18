@@ -25,7 +25,7 @@ jobs:
             target: aarch64-apple-darwin
             binary_name: rust_tui_game_of_life
             asset_name: game-of-life-macos-aarch64
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             binary_name: rust_tui_game_of_life
             asset_name: game-of-life-macos-x86_64
